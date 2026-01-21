@@ -13,6 +13,7 @@ jobs:
 
       - name: 同步代码到NAS项目目录
         run: |
+          mkdir -p /volume2/Docker/stock
           rsync -av \
             --exclude '.git' \
             --exclude '.github' \
