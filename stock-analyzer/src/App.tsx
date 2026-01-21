@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from 'react';
-import { BarChart3, Upload, Calendar, TrendingUp, Star, Trash2, Settings, Plus, PlusCircle, Database, Loader2 } from 'lucide-react';
+import { BarChart3, Upload, Calendar, TrendingUp, Star, Trash2, Settings, Plus, PlusCircle, Database, Loader2, RefreshCw, HardDrive } from 'lucide-react';
 import type { DayData, Stock } from './types';
 import { analyzeStocks, findMultiFormulaStocks, calculateStockRankings } from './utils/excelParser';
 import { FileUploader } from './components/FileUploader';
@@ -13,6 +13,9 @@ import { SettingsDialog } from './components/SettingsDialog';
 import { AddStockDialog } from './components/AddStockDialog';
 import { DateSelector } from './components/DateSelector';
 import { Trophy } from 'lucide-react';
+
+// NAS文件服务
+import { getExportFiles, fetchExportFile, uploadToExport, type ExportFile } from './utils/exportService';
 
 // 数据库相关
 import { useStockDB, useDayData, buildDayData } from './db/hooks';
@@ -35,6 +38,8 @@ function App() {
   });
   const [showSettings, setShowSettings] = useState(false);
   const [showAddStock, setShowAddStock] = useState(false);
+  const [nasFiles, setNasFiles] = useState<ExportFile[]>([]);
+  const [nasLoading, setNasLoading] = useState(false);
 
   // 当前日期数据
   const { dayData: currentDayData, isLoading: dayDataLoading } = useDayData(selectedDay);
@@ -127,29 +132,6 @@ function App() {
     }
   }, [clearAll]);
 
-  // 补充导入：将新数据合并到当前选中日期（忽略文件中的日期）
-  const handleMergeFiles = useCallback(async (files: FileList) => {
-    if (!selectedDay) {
-      alert('请先选择要补充的日期');
-      return;
-    }
-
-    setIsLoading(true);
-    try {
-      // 使用 mergeFilesToDate，强制合并到选中的日期
-      const result = await mergeFilesToDate(files, selectedDay);
-      console.log('补充导入结果:', result);
-      if (result.success > 0) {
-        alert(`补充成功：${result.details.map(d => d.result).join('\n')}`);
-      }
-    } catch (error) {
-      console.error('补充导入失败:', error);
-      alert('补充导入失败');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [selectedDay, mergeFilesToDate]);
-
   // 添加单个股票
   const handleAddStock = useCallback(async (stock: Stock) => {
     const targetDate = selectedDay || new Date().toISOString().split('T')[0].replace(/-/g, '');
@@ -168,6 +150,99 @@ function App() {
       alert('添加股票失败');
     }
   }, [selectedDay]);
+
+  // 加载NAS文件列表
+  const loadNasFiles = useCallback(async () => {
+    setNasLoading(true);
+    try {
+      const files = await getExportFiles();
+      setNasFiles(files);
+    } catch (error) {
+      console.error('加载NAS文件列表失败:', error);
+    } finally {
+      setNasLoading(false);
+    }
+  }, []);
+
+  // 从NAS导入选中的文件
+  const handleImportNasFiles = useCallback(async (filenames: string[]) => {
+    setIsLoading(true);
+    try {
+      const files: File[] = [];
+      for (const filename of filenames) {
+        const file = await fetchExportFile(filename);
+        if (file) {
+          files.push(file);
+        }
+      }
+      if (files.length > 0) {
+        // 创建一个类似FileList的对象
+        const dataTransfer = new DataTransfer();
+        files.forEach(f => dataTransfer.items.add(f));
+        await importFiles(dataTransfer.files);
+      }
+      // 导入完成
+    } catch (error) {
+      console.error('从NAS导入失败:', error);
+      alert('从NAS导入失败');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [importFiles]);
+
+  // 上传本地文件到NAS并导入
+  const handleUploadAndImport = useCallback(async (files: FileList) => {
+    setIsLoading(true);
+    try {
+      // 先上传到NAS
+      const uploadResult = await uploadToExport(files);
+      if (uploadResult.success) {
+        console.log('文件已上传到NAS:', uploadResult.files);
+      }
+      // 然后导入到数据库
+      await importFiles(files);
+      // 刷新NAS文件列表
+      await loadNasFiles();
+    } catch (error) {
+      console.error('上传并导入失败:', error);
+      alert('上传并导入失败');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [importFiles, loadNasFiles]);
+
+  // 补充导入到NAS并合并
+  const handleMergeWithUpload = useCallback(async (files: FileList) => {
+    if (!selectedDay) {
+      alert('请先选择要补充的日期');
+      return;
+    }
+    setIsLoading(true);
+    try {
+      // 先上传到NAS
+      await uploadToExport(files);
+      // 然后合并到当前日期
+      const result = await mergeFilesToDate(files, selectedDay);
+      console.log('补充导入结果:', result);
+      if (result.success > 0) {
+        alert(`补充成功：${result.details.map(d => d.result).join('\n')}`);
+      }
+      // 刷新NAS文件列表
+      await loadNasFiles();
+    } catch (error) {
+      console.error('补充导入失败:', error);
+      alert('补充导入失败');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedDay, mergeFilesToDate, loadNasFiles]);
+
+  // 初始化时加载NAS文件列表
+  useEffect(() => {
+    if (isInitialized) {
+      loadNasFiles();
+    }
+  }, [isInitialized, loadNasFiles]);
 
   // 计算统计数据
   const statsData = currentDayData ? analyzeStocks(currentDayData.allStocks) : null;
@@ -262,13 +337,13 @@ function App() {
                   </span>
                 </label>
 
-                {/* 补充导入到当前日期 */}
+                {/* 补充导入到当前日期（会同步到NAS） */}
                 <label className="relative cursor-pointer">
                   <input
                     type="file"
                     accept=".xls,.xlsx,.csv"
                     multiple
-                    onChange={(e) => e.target.files && handleMergeFiles(e.target.files)}
+                    onChange={(e) => e.target.files && handleMergeWithUpload(e.target.files)}
                     className="hidden"
                   />
                   <span className="flex items-center gap-2 px-4 py-2 bg-green-50 text-green-600 rounded-lg hover:bg-green-100 transition-colors">
@@ -301,23 +376,70 @@ function App() {
 
       <main className="max-w-7xl mx-auto px-4 py-6">
         {dates.length === 0 ? (
-          /* 空状态 - 上传区域 */
-          <div className="max-w-2xl mx-auto mt-20">
-            <FileUploader onFilesSelected={handleFilesSelected} isLoading={isLoading || dbLoading} />
-            <div className="mt-8 text-center">
-              <h2 className="text-lg font-semibold text-slate-700 mb-3">使用说明</h2>
-              <ol className="text-sm text-slate-500 space-y-2 text-left max-w-md mx-auto">
-                <li>1. 在通达信中执行选股公式或打开自选股</li>
-                <li>2. 右键 → 数据导出 → 导出所有数据 → 保存为 Excel</li>
-                <li>3. 在导出的文件中添加公式分组标记（可选）</li>
-                <li>4. 将文件拖放到上方区域或点击上传</li>
-                <li>5. 可上传多日数据进行连续性分析</li>
-              </ol>
-              <div className="mt-6 p-4 bg-blue-50 rounded-lg">
-                <Database className="w-8 h-8 text-blue-500 mx-auto mb-2" />
-                <p className="text-sm text-blue-700">
-                  数据将存储在本地 IndexedDB 数据库中，支持大容量存储和快速查询
-                </p>
+          /* 空状态 - NAS文件列表 + 上传区域 */
+          <div className="max-w-4xl mx-auto mt-10">
+            {/* NAS文件列表 */}
+            {nasFiles.length > 0 && (
+              <div className="mb-8 bg-white rounded-xl border border-slate-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-slate-700 flex items-center gap-2">
+                    <HardDrive className="w-5 h-5 text-blue-600" />
+                    NAS 文件 ({nasFiles.length})
+                  </h2>
+                  <button
+                    onClick={loadNasFiles}
+                    disabled={nasLoading}
+                    className="flex items-center gap-1 px-3 py-1 text-sm text-slate-600 hover:bg-slate-100 rounded-lg"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${nasLoading ? 'animate-spin' : ''}`} />
+                    刷新
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {nasFiles.filter(f => !f.isSingleStock).map(file => (
+                    <button
+                      key={file.name}
+                      onClick={() => handleImportNasFiles([file.name])}
+                      disabled={isLoading}
+                      className="p-3 bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-lg text-left transition-colors"
+                    >
+                      <div className="text-sm font-medium text-slate-700 truncate">{file.name}</div>
+                      <div className="text-xs text-slate-500 mt-1">
+                        {file.date ? `${file.date.slice(0,4)}-${file.date.slice(4,6)}-${file.date.slice(6,8)}` : '未知日期'}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                {nasFiles.filter(f => !f.isSingleStock).length > 1 && (
+                  <button
+                    onClick={() => handleImportNasFiles(nasFiles.filter(f => !f.isSingleStock).map(f => f.name))}
+                    disabled={isLoading}
+                    className="mt-4 w-full py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    {isLoading ? '导入中...' : `导入全部 (${nasFiles.filter(f => !f.isSingleStock).length} 个文件)`}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 本地上传区域 */}
+            <div className="max-w-2xl mx-auto">
+              <FileUploader onFilesSelected={handleUploadAndImport} isLoading={isLoading || dbLoading} />
+              <div className="mt-8 text-center">
+                <h2 className="text-lg font-semibold text-slate-700 mb-3">使用说明</h2>
+                <ol className="text-sm text-slate-500 space-y-2 text-left max-w-md mx-auto">
+                  <li>1. 在通达信中执行选股公式或打开自选股</li>
+                  <li>2. 右键 → 数据导出 → 导出所有数据 → 保存为 Excel</li>
+                  <li>3. 在导出的文件中添加公式分组标记（可选）</li>
+                  <li>4. 将文件拖放到上方区域或点击上传</li>
+                  <li>5. 上传的文件会自动保存到 NAS</li>
+                </ol>
+                <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+                  <Database className="w-8 h-8 text-blue-500 mx-auto mb-2" />
+                  <p className="text-sm text-blue-700">
+                    数据将存储在本地 IndexedDB 数据库中，文件同步到 NAS
+                  </p>
+                </div>
               </div>
             </div>
           </div>
