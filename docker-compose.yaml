@@ -1,0 +1,28 @@
+# 股票分析工具 - Docker 部署
+# 前置要求: clash 服务已启动
+# 启动: docker-compose up -d --build
+
+services:
+  stock:
+    build:
+      context: .
+      args:
+        NODE_IMAGE: docker.m.daocloud.io/library/node:20-slim
+    image: stock:latest
+    container_name: stock
+    restart: unless-stopped
+    volumes:
+      - ./chat_history:/app/chat_history
+      - ./export:/app/export
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - HTTP_PROXY=http://clash:7890
+      - HTTPS_PROXY=http://clash:7890
+    networks:
+      - clash_network
+
+networks:
+  clash_network:
+    external: true

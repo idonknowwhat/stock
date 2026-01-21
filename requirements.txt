@@ -1,0 +1,4 @@
+# Python 依赖 (启动器)
+pandas>=1.5.0
+openpyxl>=3.0.0
+PyQt6>=6.4.0

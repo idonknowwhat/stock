@@ -1,0 +1,32 @@
+name: 自动部署到NAS
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, nas]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 同步代码到NAS项目目录
+        run: |
+          rsync -av \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude 'chat_history/' \
+            --exclude 'export/' \
+            ./ /volume2/Docker/stock/
+
+      - name: 重启Docker容器
+        run: |
+          cd /volume2/Docker/stock
+          docker compose -f docker-compose.yaml down || true
+          docker compose -f docker-compose.yaml build --no-cache
+          docker compose -f docker-compose.yaml up -d
+
+      - name: 清理旧镜像缓存
+        run: |
+          docker image prune -f
