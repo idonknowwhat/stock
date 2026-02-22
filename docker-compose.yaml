@@ -20,6 +20,11 @@ services:
       - PORT=3001
       - HTTP_PROXY=http://clash:7890
       - HTTPS_PROXY=http://clash:7890
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
     networks:
       - clash_network
 
